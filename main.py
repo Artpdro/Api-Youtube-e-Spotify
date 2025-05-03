@@ -4,7 +4,7 @@ import isodate
 from googleapiclient.discovery import build
 from pymongo import MongoClient, UpdateOne
 
-YOUTUBE_API_KEY = os.getenv("https://developers.google.com/youtube/v3", "AIzaSyBQNxhayEu3EjsLbdONWGM0n2tKz1-YcJg")
+YOUTUBE_API_KEY = os.getenv("", "")
 MONGO_URI       = os.getenv("MONGO_URI",       "mongodb://localhost:27017/")
 DB_NAME         = "youtube_etl"
 COL_VIDEOS      = "youtube_videos"
