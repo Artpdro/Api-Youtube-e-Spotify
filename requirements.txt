@@ -1,0 +1,6 @@
+spotipy==2.22.1
+google-api-python-client==2.70.0
+pymongo==4.5.0
+pandas==2.0.3
+isodate==0.6.1
+python-dotenv==1.0.0
