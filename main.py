@@ -14,7 +14,6 @@ MONGO_URI              = os.getenv("MONGO_URI", "mongodb://localhost:27017/")
 mongo = MongoClient(MONGO_URI)
 db    = mongo["pipeline_etl"]
 
-# ---YOUTUBE---
 yt_client = build("youtube", "v3", developerKey=YOUTUBE_API_KEY)
 col_videos = db["youtube_videos"]
 
@@ -110,7 +109,6 @@ def load_videos(records):
         result = col_videos.bulk_write(ops)
         print(f"[YouTube] upserted: {result.upserted_count}, modified: {result.modified_count}")
 
-# ---SPOTIFY---
 auth_manager = SpotifyClientCredentials(client_id=SPOTIFY_CLIENT_ID, client_secret=SPOTIFY_CLIENT_SECRET)
 sp = spotipy.Spotify(auth_manager=auth_manager)
 col_tracks = db["spotify_tracks"]
