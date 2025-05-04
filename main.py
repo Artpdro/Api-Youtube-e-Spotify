@@ -3,16 +3,22 @@ import time
 import isodate
 from googleapiclient.discovery import build
 from pymongo import MongoClient, UpdateOne
+import spotipy
+from spotipy.oauth2 import SpotifyClientCredentials
 
-YOUTUBE_API_KEY = os.getenv("", "")
-MONGO_URI       = os.getenv("MONGO_URI",       "mongodb://localhost:27017/")
-DB_NAME         = "youtube_etl"
-COL_VIDEOS      = "youtube_videos"
+YOUTUBE_API_KEY        = os.getenv("YOUTUBE_API_KEY", "AIzaSyBQNxhayEu3EjsLbdONWGM0n2tKz1-YcJg")
+SPOTIFY_CLIENT_ID      = os.getenv("SPOTIFY_CLIENT_ID", "4c4fd8ba1b7a462e9fb095081d310a82")
+SPOTIFY_CLIENT_SECRET  = os.getenv("SPOTIFY_CLIENT_SECRET", "9324df95c66b4b7e80194e1db4231679")
+MONGO_URI              = os.getenv("MONGO_URI", "mongodb://localhost:27017/")
+
+mongo = MongoClient(MONGO_URI)
+db    = mongo["pipeline_etl"]
+
+# ---YOUTUBE---
+yt_client = build("youtube", "v3", developerKey=YOUTUBE_API_KEY)
+col_videos = db["youtube_videos"]
 
 class YouTubeCategoryClassifier:
-    """
-    Converte category_id em título de categoria legível.
-    """
     def __init__(self):
         self.id_to_title = {
             "1":  "Film & Animation",
@@ -55,13 +61,7 @@ class YouTubeCategoryClassifier:
         record[dst_field] = self.get_title(cid)
         return record
 
-yt_client = build("youtube", "v3", developerKey=YOUTUBE_API_KEY)
-mongo     = MongoClient(MONGO_URI)
-db        = mongo[DB_NAME]
-col_videos = db[COL_VIDEOS]
-
-def extract_trending(region: str="BR", max_results: int=10):
-    """Busca trending e retorna lista de itens brutos."""
+def extract_trending(region="BR", max_results=10):
     resp = yt_client.videos().list(
         part="snippet,statistics,contentDetails",
         chart="mostPopular",
@@ -70,9 +70,7 @@ def extract_trending(region: str="BR", max_results: int=10):
     ).execute()
     return resp.get("items", [])
 
-
-def transform(items):
-    """Filtra campos, converte e adiciona category_title."""
+def transform_youtube(items):
     classifier = YouTubeCategoryClassifier()
     records = []
     for v in items:
@@ -85,22 +83,20 @@ def transform(items):
         except Exception:
             duration_sec = 0
         rec = {
-            "video_id":      v["id"],
+            "video_id":       v["id"],
             "Titulo":         sn.get("title"),
-            "Canal":       sn.get("channelTitle"),
-            "category_id":   sn.get("categoryId"),
-            "Visualizações":    int(st.get("viewCount", 0)),
-            "Likes":    int(st.get("likeCount", 0)),
-            "Comentarios": int(st.get("commentCount", 0)),
-            "Duração do video":  duration_sec
+            "Canal":          sn.get("channelTitle"),
+            "category_id":    sn.get("categoryId"),
+            "Visualizações":  int(st.get("viewCount", 0)),
+            "Likes":          int(st.get("likeCount", 0)),
+            "Comentarios":    int(st.get("commentCount", 0)),
+            "Duração_seg":    duration_sec
         }
         rec = classifier.transform_record(rec)
         records.append(rec)
     return records
 
-
 def load_videos(records):
-    """Upsert dos registros na coleção youtube_videos."""
     ops = []
     for doc in records:
         ops.append(
@@ -112,21 +108,81 @@ def load_videos(records):
         )
     if ops:
         result = col_videos.bulk_write(ops)
-        print(f"[{COL_VIDEOS}] upserted: {result.upserted_count}, modified: {result.modified_count}")
+        print(f"[YouTube] upserted: {result.upserted_count}, modified: {result.modified_count}")
 
+# ---SPOTIFY---
+auth_manager = SpotifyClientCredentials(client_id=SPOTIFY_CLIENT_ID, client_secret=SPOTIFY_CLIENT_SECRET)
+sp = spotipy.Spotify(auth_manager=auth_manager)
+col_tracks = db["spotify_tracks"]
+
+def ms_to_min_sec(ms):
+    minutes = ms // 60000
+    seconds = (ms % 60000) // 1000
+    return f"{minutes}:{seconds:02d}"
+
+def extract_playlist_tracks(playlist_id, limit=20):
+    results = sp.playlist_items(playlist_id, limit=limit)
+    return results.get("items", [])
+    
+
+def transform_spotify(tracks):
+    records = []
+    for item in tracks:
+        track = item.get("track", {})
+        if not track:
+            continue
+        artists = [artist["name"] for artist in track.get("artists", [])]
+        duration_ms = track.get("duration_ms")
+        duration_formatted = ms_to_min_sec(duration_ms)  # Formatação da duração
+
+        rec = {
+            "track_id":       track.get("id"),
+            "Nome":           track.get("name"),
+            "Artistas":       artists,
+            "Album":          track.get("album", {}).get("name"),
+            "Popularidade":   track.get("popularity"),
+            "Duração":        duration_formatted,  # Use o formato aqui
+            "Data_Lancamento": track.get("album", {}).get("release_date"),
+            "URL":            track.get("external_urls", {}).get("spotify"),
+        }
+        records.append(rec)
+    return records
+
+def load_tracks(records):
+    ops = []
+    for doc in records:
+        ops.append(
+            UpdateOne(
+                {"track_id": doc["track_id"]},
+                {"$set": doc},
+                upsert=True
+            )
+        )
+    if ops:
+        result = col_tracks.bulk_write(ops)
+        print(f"[Spotify] upserted: {result.upserted_count}, modified: {result.modified_count}")
 
 def main():
+    print("→ Extraindo dados do YouTube...")
     regions    = ["BR"]
     max_videos = 10
-
     for rc in regions:
-        print(f"→ Processo para trending {rc}...")
         items = extract_trending(region=rc, max_results=max_videos)
-        records = transform(items)
+        records = transform_youtube(items)
         load_videos(records)
         time.sleep(0.5)
 
-    print("Dados filtrados de YouTube salvos em 'youtube_videos' com sucesso!")
+    print("→ Extraindo dados do Spotify...")
+    playlist_ids = [
+        "0VU29I2nq0iKGTOh5jNAKQ"
+    ]
+    for pid in playlist_ids:
+        tracks = extract_playlist_tracks(pid, limit=20)
+        records = transform_spotify(tracks)
+        load_tracks(records)
+        time.sleep(0.5)
+
+    print("ETL concluído para YouTube e Spotify!")
 
 if __name__ == "__main__":
     main()
